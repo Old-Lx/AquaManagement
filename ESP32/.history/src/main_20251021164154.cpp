@@ -44,8 +44,8 @@ Pump pumps[] = {
 };
 const int NUM_PUMPS = 2; // Cantidad total de bombas
 
-// El topic de monitoreo se maneja directamente en publishTelemetry ya que se hace para cada bomba
-
+// Monitoreo
+const char* TELEMETRY_TOPIC = "caracas/pumps/1/telemetry";
 // Control
 const char* CONTROL_TOPIC_SUBSCRIPTION = "caracas/pumps/+/control";
 
@@ -333,60 +333,26 @@ void read_or_mock_sensors() {
 void publishTelemetry() {
   read_or_mock_sensors();
   
-  // -----------------------------------------------------
-  // BUCLE PARA PUBLICAR LOS DATOS INDIVIDUALES DE CADA BOMBA
-  // -----------------------------------------------------
-  for (int i = 0; i < NUM_PUMPS; i++) {
-    Pump currentPump = pumps[i];
-    
-    // 1. LECTURA ESPECÍFICA (Amperaje y Flujo Individuales)
-    float pump_amps = 0.0;
-    float pump_flow_rate = 0.0;
-    
-    #if SENSOR_SIMULATION
-      // SIMULACIÓN: Los datos individuales dependen de si el relé está ON
-      pump_amps = currentPump.is_on ? (10.0 + (float)random(0, 50) / 10.0) : 0.0;
-      pump_flow_rate = currentPump.is_on ? (70.0 + (float)random(0, 10) / 10.0) : 0.0; 
-    #else
-      // LECTURA REAL: REQUIERE HARDWARE ADICIONAL
-      // Aquí necesitarías:
-      // - Un segundo sensor CT (corriente) conectado a otro pin analógico.
-      // - Un segundo sensor de flujo (opcional) conectado a otro pin digital/interrupción.
-      
-      // Simplificado: Necesitarías adaptar readRealAmps para leer un pin específico.
-      // if (currentPump.id == 1) { pump_amps = readRealAmps(PIN_CT_1); }
-      // else { pump_amps = readRealAmps(PIN_CT_2); }
-      
-      // Por ahora, usamos el estado ON/OFF para simular el amperaje en modo no simulación.
-      pump_amps = currentPump.is_on ? (readRealAmps() * 0.8) : 0.0; // Amperaje reducido si está encendida.
-      pump_flow_rate = currentPump.is_on ? (readRealInflowRate() * 0.5) : 0.0;
-    #endif
-    
-    // 2. CREAR EL JSON Y TÓPICO DINÁMICO
-    StaticJsonDocument<256> doc;
+  StaticJsonDocument<256> doc;
 
-    doc["pump_id"] = currentPump.id;
-    doc["current_amps"] = pump_amps;
-    doc["current_inflow_rate"] = pump_flow_rate;
-    doc["timestamp"] = (long)time(NULL); 
-    
-    // El nivel es COMPARTIDO
-    doc["water_level_percent"] = water_level_percent; 
-    doc["street_flow_status"] = (pump_amps > 0) ? "FLOWING" : "STOPPED";
-    
-    char output[256];
-    size_t n = serializeJson(doc, output);
-    
-    // Tópico dinámico: caracas/pumps/1/telemetry o caracas/pumps/2/telemetry
-    char topicBuffer[40];
-    sprintf(topicBuffer, "caracas/pumps/%d/telemetry", currentPump.id);
-  }
+  doc["pump_id"] = PUMP_ID;
+  doc["timestamp"] = (long)time(NULL); 
+  doc["water_level_percent"] = water_level_percent;
+  doc["current_amps"] = current_amps;
+  doc["street_flow_status"] = is_flow_detected ? "FLOWING" : "STOPPED";
+  doc["current_inflow_rate"] = current_inflow_rate;
+
+  char output[256];
+  size_t n = serializeJson(doc, output);
+  
+  Serial.print("JSON Generado: ");
+  Serial.println(output);
 
 // Decidir si publicar a MQTT o solo imprimir a Serial
 #if PUMP_MODE
   // PUBLICACIÓN A MQTT (Modos Producción y Prueba Online)
   if (client.connected()) {
-      client.publish(topicBuffer, output, n);
+      client.publish(TELEMETRY_TOPIC, output, n);
       Serial.println("✅ Publicado a MQTT.");
   } else {
       Serial.println("⚠️ MQTT no conectado. No se pudo publicar.");

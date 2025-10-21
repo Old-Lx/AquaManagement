@@ -25,27 +25,14 @@ const char* mqtt_server = "192.168.1.10"; // IP de tu Broker (o Lovable Cloud)
 const int mqtt_port = 1883;
 
 const char* clientID = "ESP32_Pump_Controller_1";
+const int PUMP_ID = 1;
 
 // Constantes de control
 #define RELAY_PIN_PUMP_1 27 // Pin de Relé para Bomba 1 (Pin de ejemplo)
 #define RELAY_PIN_PUMP_2 26 // Pin de Relé para Bomba 2 (Pin de ejemplo)
 
-// Estructura para gestionar el estado de cada bomba
-struct Pump {
-  int id;
-  int relayPin;
-  bool is_on; // Estado actual de la bomba (para simulación)
-};
-
-// Array para las dos bombas
-Pump pumps[] = {
-  {1, RELAY_PIN_PUMP_1, false},
-  {2, RELAY_PIN_PUMP_2, false}
-};
-const int NUM_PUMPS = 2; // Cantidad total de bombas
-
-// El topic de monitoreo se maneja directamente en publishTelemetry ya que se hace para cada bomba
-
+// Monitoreo
+const char* TELEMETRY_TOPIC = "caracas/pumps/1/telemetry";
 // Control
 const char* CONTROL_TOPIC_SUBSCRIPTION = "caracas/pumps/+/control";
 
@@ -123,12 +110,6 @@ void reconnect() {
       Serial.print("Intentando conexión MQTT...");
       if (client.connect(clientID)) {
         Serial.println("conectado");
-        
-        // SUSCRIPCIÓN GENÉRICA PARA EL CONTROL DE CUALQUIER BOMBA
-        client.subscribe(CONTROL_TOPIC_SUBSCRIPTION); 
-        Serial.print("Suscrito al control genérico: ");
-        Serial.println(CONTROL_TOPIC_SUBSCRIPTION);
-        
       } else {
         Serial.print("falló, rc=");
         Serial.print(client.state());
@@ -137,54 +118,6 @@ void reconnect() {
       }
     }
   #endif
-}
-
-void callback(char* topic, byte* payload, unsigned int length) {
-  // ... (código para deserializar JSON y verificar errores) ...
-  StaticJsonDocument<256> doc;
-  
-  // 1. EXTRAER EL ID DE LA BOMBA DEL TOPIC
-  int pumpId = 0;
-  // Usamos sscanf para leer el número después de "caracas/pumps/"
-  sscanf(topic, "caracas/pumps/%d/control", &pumpId); 
-
-  if (pumpId == 0) {
-    Serial.println("ID de bomba no válido en el topic. Ignorando.");
-    return;
-  }
-
-  // 2. ENCONTRAR LA BOMBA EN EL ARRAY
-  Pump* targetPump = nullptr;
-  for (int i = 0; i < NUM_PUMPS; i++) {
-    if (pumps[i].id == pumpId) {
-      targetPump = &pumps[i];
-      break;
-    }
-  }
-
-  if (targetPump == nullptr) {
-    Serial.print("Bomba con ID ");
-    Serial.print(pumpId);
-    Serial.println(" no encontrada en la configuración del ESP32.");
-    return;
-  }
-
-  // 3. EXTRAER EL COMANDO Y ACTUAR SOBRE EL RELÉ
-  const char* command = doc["command"]; 
-
-  if (strcmp(command, "START") == 0) {
-    Serial.print(">>> COMANDO START para Bomba ");
-    Serial.println(targetPump->id);
-    digitalWrite(targetPump->relayPin, HIGH); // ENCENDER el relé
-    targetPump->is_on = true;
-  } else if (strcmp(command, "STOP") == 0) {
-    Serial.print(">>> COMANDO STOP para Bomba ");
-    Serial.println(targetPump->id);
-    digitalWrite(targetPump->relayPin, LOW); // APAGAR el relé
-    targetPump->is_on = false;
-  } else {
-    Serial.println("Comando desconocido.");
-  }
 }
 
 // -------------------------------------------------------------------------
@@ -333,60 +266,26 @@ void read_or_mock_sensors() {
 void publishTelemetry() {
   read_or_mock_sensors();
   
-  // -----------------------------------------------------
-  // BUCLE PARA PUBLICAR LOS DATOS INDIVIDUALES DE CADA BOMBA
-  // -----------------------------------------------------
-  for (int i = 0; i < NUM_PUMPS; i++) {
-    Pump currentPump = pumps[i];
-    
-    // 1. LECTURA ESPECÍFICA (Amperaje y Flujo Individuales)
-    float pump_amps = 0.0;
-    float pump_flow_rate = 0.0;
-    
-    #if SENSOR_SIMULATION
-      // SIMULACIÓN: Los datos individuales dependen de si el relé está ON
-      pump_amps = currentPump.is_on ? (10.0 + (float)random(0, 50) / 10.0) : 0.0;
-      pump_flow_rate = currentPump.is_on ? (70.0 + (float)random(0, 10) / 10.0) : 0.0; 
-    #else
-      // LECTURA REAL: REQUIERE HARDWARE ADICIONAL
-      // Aquí necesitarías:
-      // - Un segundo sensor CT (corriente) conectado a otro pin analógico.
-      // - Un segundo sensor de flujo (opcional) conectado a otro pin digital/interrupción.
-      
-      // Simplificado: Necesitarías adaptar readRealAmps para leer un pin específico.
-      // if (currentPump.id == 1) { pump_amps = readRealAmps(PIN_CT_1); }
-      // else { pump_amps = readRealAmps(PIN_CT_2); }
-      
-      // Por ahora, usamos el estado ON/OFF para simular el amperaje en modo no simulación.
-      pump_amps = currentPump.is_on ? (readRealAmps() * 0.8) : 0.0; // Amperaje reducido si está encendida.
-      pump_flow_rate = currentPump.is_on ? (readRealInflowRate() * 0.5) : 0.0;
-    #endif
-    
-    // 2. CREAR EL JSON Y TÓPICO DINÁMICO
-    StaticJsonDocument<256> doc;
+  StaticJsonDocument<256> doc;
 
-    doc["pump_id"] = currentPump.id;
-    doc["current_amps"] = pump_amps;
-    doc["current_inflow_rate"] = pump_flow_rate;
-    doc["timestamp"] = (long)time(NULL); 
-    
-    // El nivel es COMPARTIDO
-    doc["water_level_percent"] = water_level_percent; 
-    doc["street_flow_status"] = (pump_amps > 0) ? "FLOWING" : "STOPPED";
-    
-    char output[256];
-    size_t n = serializeJson(doc, output);
-    
-    // Tópico dinámico: caracas/pumps/1/telemetry o caracas/pumps/2/telemetry
-    char topicBuffer[40];
-    sprintf(topicBuffer, "caracas/pumps/%d/telemetry", currentPump.id);
-  }
+  doc["pump_id"] = PUMP_ID;
+  doc["timestamp"] = (long)time(NULL); 
+  doc["water_level_percent"] = water_level_percent;
+  doc["current_amps"] = current_amps;
+  doc["street_flow_status"] = is_flow_detected ? "FLOWING" : "STOPPED";
+  doc["current_inflow_rate"] = current_inflow_rate;
+
+  char output[256];
+  size_t n = serializeJson(doc, output);
+  
+  Serial.print("JSON Generado: ");
+  Serial.println(output);
 
 // Decidir si publicar a MQTT o solo imprimir a Serial
 #if PUMP_MODE
   // PUBLICACIÓN A MQTT (Modos Producción y Prueba Online)
   if (client.connected()) {
-      client.publish(topicBuffer, output, n);
+      client.publish(TELEMETRY_TOPIC, output, n);
       Serial.println("✅ Publicado a MQTT.");
   } else {
       Serial.println("⚠️ MQTT no conectado. No se pudo publicar.");
@@ -416,25 +315,13 @@ void setup() {
     sensors.begin(); // DS18B20
     pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), flowPulseCounter, RISING);
-    
     // Configura el pin analógico de corriente, si es necesario.
-    
     // Sensores de nivel de agua alto y bajo con flotadores
     pinMode(HIGH_LEVEL_PIN, INPUT_PULLUP);
     pinMode(LOW_LEVEL_PIN, INPUT_PULLUP);
-   
     // Sensor ultrasonico
     pinMode(ULTRASONIC_TRIG, OUTPUT);
     pinMode(ULTRASONIC_ECHO, INPUT);
-
-    // INICIALIZACIÓN DE LOS PINES DE RELÉ PARA AMBAS BOMBAS
-    pinMode(RELAY_PIN_PUMP_1, OUTPUT);
-    digitalWrite(RELAY_PIN_PUMP_1, LOW); // Iniciar apagada
-    
-    pinMode(RELAY_PIN_PUMP_2, OUTPUT);
-    digitalWrite(RELAY_PIN_PUMP_2, LOW); // Iniciar apagada
-
-    client.setCallback(callback);
   #endif
   
   configTime(0, 0, "pool.ntp.org");

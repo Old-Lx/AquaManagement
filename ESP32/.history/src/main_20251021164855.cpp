@@ -44,8 +44,8 @@ Pump pumps[] = {
 };
 const int NUM_PUMPS = 2; // Cantidad total de bombas
 
-// El topic de monitoreo se maneja directamente en publishTelemetry ya que se hace para cada bomba
-
+// Monitoreo
+const char* TELEMETRY_TOPIC = "caracas/pumps/1/telemetry";
 // Control
 const char* CONTROL_TOPIC_SUBSCRIPTION = "caracas/pumps/+/control";
 

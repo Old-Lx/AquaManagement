@@ -44,8 +44,8 @@ Pump pumps[] = {
 };
 const int NUM_PUMPS = 2; // Cantidad total de bombas
 
-// El topic de monitoreo se maneja directamente en publishTelemetry ya que se hace para cada bomba
-
+// Monitoreo
+const char* TELEMETRY_TOPIC = "caracas/pumps/1/telemetry";
 // Control
 const char* CONTROL_TOPIC_SUBSCRIPTION = "caracas/pumps/+/control";
 
@@ -343,11 +343,11 @@ void publishTelemetry() {
     float pump_amps = 0.0;
     float pump_flow_rate = 0.0;
     
-    #if SENSOR_SIMULATION
+    if (SENSOR_SIMULATION) {
       // SIMULACIÓN: Los datos individuales dependen de si el relé está ON
       pump_amps = currentPump.is_on ? (10.0 + (float)random(0, 50) / 10.0) : 0.0;
       pump_flow_rate = currentPump.is_on ? (70.0 + (float)random(0, 10) / 10.0) : 0.0; 
-    #else
+    } else {
       // LECTURA REAL: REQUIERE HARDWARE ADICIONAL
       // Aquí necesitarías:
       // - Un segundo sensor CT (corriente) conectado a otro pin analógico.
@@ -360,7 +360,7 @@ void publishTelemetry() {
       // Por ahora, usamos el estado ON/OFF para simular el amperaje en modo no simulación.
       pump_amps = currentPump.is_on ? (readRealAmps() * 0.8) : 0.0; // Amperaje reducido si está encendida.
       pump_flow_rate = currentPump.is_on ? (readRealInflowRate() * 0.5) : 0.0;
-    #endif
+    }
     
     // 2. CREAR EL JSON Y TÓPICO DINÁMICO
     StaticJsonDocument<256> doc;
