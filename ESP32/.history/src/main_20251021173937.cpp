@@ -386,7 +386,7 @@ void publishTelemetry() {
 
     doc["pump_id"] = currentPump.id;
     doc["current_amps"] = pump_amps;
-    doc["pump_temperature_celsius"] = pump_temperature_celsius;
+    doc["pump_temperature_celsius"] = pump_temperature_celsius; // <-- DATO AÑADIDO
     doc["current_inflow_rate"] = pump_flow_rate;
     doc["timestamp"] = (long)time(NULL); 
     

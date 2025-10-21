@@ -349,14 +349,11 @@ void publishTelemetry() {
     // 1. LECTURA ESPECÍFICA (Amperaje y Flujo Individuales)
     float pump_amps = 0.0;
     float pump_flow_rate = 0.0;
-    float pump_temperature_celsius = -127.0; // Valor por defecto en caso de error
-
+    
     #if SENSOR_SIMULATION
       // SIMULACIÓN: Los datos individuales dependen de si el relé está ON
       pump_amps = currentPump.is_on ? (10.0 + (float)random(0, 50) / 10.0) : 0.0;
-      pump_flow_rate = currentPump.is_on ? (70.0 + (float)random(0, 10) / 10.0) : 0.0;
-      // Simula una temperatura de motor realista si la bomba está encendida
-      pump_temperature_celsius = currentPump.is_on ? (65.0 + (float)random(-100, 150) / 10.0) : 25.0;
+      pump_flow_rate = currentPump.is_on ? (70.0 + (float)random(0, 10) / 10.0) : 0.0; 
     #else
       // LECTURA REAL: REQUIERE HARDWARE ADICIONAL
       // Aquí necesitarías:
@@ -370,15 +367,6 @@ void publishTelemetry() {
       // Por ahora, usamos el estado ON/OFF para simular el amperaje en modo no simulación.
       pump_amps = currentPump.is_on ? (readRealAmps() * 0.8) : 0.0; // Amperaje reducido si está encendida.
       pump_flow_rate = currentPump.is_on ? (readRealInflowRate() * 0.5) : 0.0;
-
-      // Lectura de temperatura basada en el ID de la bomba
-      if (currentPump.id == 1) {
-        sensors1.requestTemperatures();
-        pump_temperature_celsius = sensors1.getTempCByIndex(0);
-      } else if (currentPump.id == 2) {
-        sensors2.requestTemperatures();
-        pump_temperature_celsius = sensors2.getTempCByIndex(0);
-      }
     #endif
     
     // 2. CREAR EL JSON Y TÓPICO DINÁMICO
@@ -386,11 +374,10 @@ void publishTelemetry() {
 
     doc["pump_id"] = currentPump.id;
     doc["current_amps"] = pump_amps;
-    doc["pump_temperature_celsius"] = pump_temperature_celsius;
     doc["current_inflow_rate"] = pump_flow_rate;
     doc["timestamp"] = (long)time(NULL); 
     
-    // Datos compartidos
+    // El nivel es COMPARTIDO
     doc["water_level_percent"] = water_level_percent; 
     doc["street_flow_status"] = (pump_amps > 0) ? "FLOWING" : "STOPPED";
     
@@ -400,32 +387,21 @@ void publishTelemetry() {
     // Tópico dinámico: caracas/pumps/1/telemetry o caracas/pumps/2/telemetry
     char topicBuffer[40];
     sprintf(topicBuffer, "caracas/pumps/%d/telemetry", currentPump.id);
+  }
 
-    // Decidir si publicar a MQTT o solo imprimir a Serial
-    #if PUMP_MODE
-      // PUBLICACIÓN A MQTT (Modos Producción y Prueba Online)
-      if (client.connected()) {
-          client.publish(topicBuffer, output, n);
-      }
-    #endif
-    
-    // Impresión para depuración (se muestra en todos los modos)
-    Serial.printf("--- Publicando para Bomba %d ---\n", currentPump.id);
-    Serial.println(output);
-    Serial.println("---------------------------------");
-
-  } // Fin del bucle for
-
-  // Imprimir estado de la publicación
-  #if PUMP_MODE
-    if (client.connected()) {
-        Serial.println("✅ Publicado a MQTT.");
-    } else {
-        Serial.println("⚠️ MQTT no conectado. No se pudo publicar.");
-    }
-  #else
-    Serial.println(">>> MODO OFFLINE_TEST ACTIVO: SOLO IMPRESIÓN SERIAL. <<<");
-  #endif
+// Decidir si publicar a MQTT o solo imprimir a Serial
+#if PUMP_MODE
+  // PUBLICACIÓN A MQTT (Modos Producción y Prueba Online)
+  if (client.connected()) {
+      client.publish(topicBuffer, output, n);
+      Serial.println("✅ Publicado a MQTT.");
+  } else {
+      Serial.println("⚠️ MQTT no conectado. No se pudo publicar.");
+  }
+#else
+  // SOLO IMPRESIÓN (Modo Prueba Offline)
+  Serial.println(">>> MODO OFFLINE_TEST ACTIVO: SOLO IMPRESIÓN SERIAL. <<<");
+#endif
 }
 
 // -------------------------------------------------------------------------
@@ -444,10 +420,7 @@ void setup() {
   
   #if !SENSOR_SIMULATION
     // INICIALIZACIÓN DEL HARDWARE REAL
-
-    // DS18B20
-    sensors1.begin(); // Inicia el sensor de la Bomba 1
-    sensors2.begin(); // Inicia el sensor de la Bomba 2
+    sensors.begin(); // DS18B20
     pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), flowPulseCounter, RISING);
     
