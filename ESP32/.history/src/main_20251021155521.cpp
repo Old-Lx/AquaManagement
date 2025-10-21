@@ -130,7 +130,7 @@ void reconnect() {
       flow_pulses++;
     }
 
-    // Función que lee el sensor de Corriente (ej. CT no invasivo como SCT-013)
+    // Función que lee el sensor de Corriente (ej. CT no invasivo)
     float readRealAmps() {
         // En un proyecto real, se usa EmonLib o una librería similar 
         // para medir el RMS del pin analógico. Aquí solo leemos el valor crudo.
@@ -182,36 +182,36 @@ void reconnect() {
     }
 
     // Función que lee el nivel de agua (ej. flotador o presión en pin analógico)
-    float readFloaterWaterLevel() {
-        int highStatus = digitalRead(HIGH_LEVEL_PIN); // Leer flotador superior
-        int lowStatus = digitalRead(LOW_LEVEL_PIN);   // Leer flotador inferior
+    float readFloatWaterLevel() {
+    int highStatus = digitalRead(HIGH_LEVEL_PIN); // Leer flotador superior
+    int lowStatus = digitalRead(LOW_LEVEL_PIN);   // Leer flotador inferior
 
-        // Caso 1: Tanque Lleno (Ambos flotadores levantados - HIGH en pull-up)
-        // Asumimos lógica: LOW cuando hay agua (flotador hundido); HIGH cuando está vacío/bajo.
-        if (highStatus == LOW) { // Si el flotador superior detecta agua
-            return 100.0;
-        }
-        
-        // Caso 2: Nivel por Debajo del Flotador Alto pero por Encima del Flotador Bajo
-        if (highStatus == HIGH && lowStatus == LOW) {
-            // En este estado intermedio, el nivel está entre ~20% y ~80%. 
-            // Se puede devolver un valor medio o simplemente un estado de bombeo.
-            return 50.0;
-        }
-
-        // Caso 3: Tanque Vacío (Ambos flotadores caídos - HIGH en pull-up)
-        if (lowStatus == HIGH) { // Si el flotador inferior NO detecta agua
-            return 0.0;
-        }
-
-        // Default de seguridad
+    // Caso 1: Tanque Lleno (Ambos flotadores levantados - HIGH en pull-up)
+    // Asumimos lógica: LOW cuando hay agua (flotador hundido); HIGH cuando está vacío/bajo.
+    if (highStatus == LOW) { // Si el flotador superior detecta agua
+        return 100.0;
+    }
+    
+    // Caso 2: Nivel por Debajo del Flotador Alto pero por Encima del Flotador Bajo
+    if (highStatus == HIGH && lowStatus == LOW) {
+        // En este estado intermedio, el nivel está entre ~20% y ~80%. 
+        // Se puede devolver un valor medio o simplemente un estado de bombeo.
         return 50.0;
     }
+
+    // Caso 3: Tanque Vacío (Ambos flotadores caídos - HIGH en pull-up)
+    if (lowStatus == HIGH) { // Si el flotador inferior NO detecta agua
+        return 0.0;
+    }
+
+    // Default de seguridad
+    return 50.0;
+}
 
     // Función que lee el sensor de Flujo (Calcula L/min)
     float readRealInflowRate() {
         // La lógica debe calcular los pulsos/segundo (flow_pulses) y convertirlos a L/min
-        float flow_rate = (float)flow_pulses * 0.00225; // Ejemplo: 0.00225 L/pulso Ese es un valor K que depende del sensor
+        float flow_rate = (float)flow_pulses * 0.00225; // Ejemplo: 0.00225 L/pulso
         flow_pulses = 0; // Resetear contador de pulsos
         return flow_rate;
     }
@@ -240,7 +240,7 @@ void read_or_mock_sensors() {
     // CASO B: LECTURA DE HARDWARE REAL
     // La lectura de sensores reales (analógicos y digitales)
     current_amps = readRealAmps();
-    water_level_percent = readFloaterWaterLevel();
+    water_level_percent = readFloatWaterLevel();
     current_inflow_rate = readRealInflowRate();
     
     // El flujo se detecta si la tasa de entrada es > 0
