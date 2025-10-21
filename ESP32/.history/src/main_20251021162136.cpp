@@ -6,13 +6,7 @@
 // 0. MODOS DE OPERACIÓN
 // -------------------------------------------------------------------------
 
-/*PUMP_MODE   SENSOR_SIMULATION       Comportamiento
-  0           true                    Prueba offline sin sensores
-  0           false                   Prueba offline con sensores
-  1           true                    Prueba online sin sensores
-  1           false                   Produccion, funciona con sensores y online
-*/
-#define PUMP_MODE 0  // El modo 0 es prueba offline, el 1 es prueba online o produccion
+#define PUMP_MODE 0  // El modo 0 es prueba offline, el 1 es prueba online y el 2 es produccion// Boolean que activa el modo de simulacion, pensado para probar sin sensores
 #define SENSOR_SIMULATION true // Indica si la data va a ser simulada o no
 
 // -------------------------------------------------------------------------
