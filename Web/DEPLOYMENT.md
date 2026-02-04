@@ -1,0 +1,894 @@
+# Guía de Despliegue del Sistema de Monitoreo de Bombas
+
+Esta guía proporciona instrucciones completas para desplegar el sistema de monitoreo y control de bombas de agua en un servidor VPS (DigitalOcean, Vultr, AWS EC2, etc.) con Ubuntu.
+
+## 1. Arquitectura del Sistema
+
+El sistema está compuesto por los siguientes componentes principales:
+
+### Componentes
+
+- **Frontend (React + TypeScript)**: Interfaz web para visualizar el estado de las bombas y enviar comandos de control.
+- **Backend (Node.js + Express + TypeScript)**: API REST que gestiona las peticiones del frontend y publica comandos en MQTT.
+- **Broker MQTT (Mosquitto)**: Servidor de mensajería que recibe datos de telemetría de los ESP32 y distribuye comandos de control.
+- **Base de Datos (PostgreSQL)**: Almacena el historial de telemetría y datos del sistema.
+- **Dispositivos IoT (ESP32)**: Controlan físicamente las bombas y envían telemetría en tiempo real.
+
+### Flujo de Datos
+
+```
+┌─────────────┐
+│   ESP32     │ ──(telemetría MQTT)──> ┌──────────────┐
+│  Bomba 1    │                         │   Mosquitto  │
+└─────────────┘                         │ MQTT Broker  │
+                                        └──────┬───────┘
+┌─────────────┐                                │
+│   ESP32     │ ──(telemetría MQTT)──> ────────┤
+│  Bomba 2    │                                │
+└─────────────┘                                │
+       ▲                                       │
+       │                                       ▼
+       │                            ┌──────────────────┐
+       │                            │   Backend API    │
+       │                            │  (Node.js/TS)    │
+       │                            └────────┬─────────┘
+       │                                     │
+       └──(comandos control)─────────────────┤
+                                             │
+                                             ▼
+                                   ┌─────────────────┐
+                                   │   PostgreSQL    │
+                                   │   (Database)    │
+                                   └─────────────────┘
+                                             ▲
+                                             │
+                                   ┌─────────┴─────────┐
+                                   │    Frontend       │
+                                   │  (React/Vite)     │
+                                   └───────────────────┘
+```
+
+**Flujo de operación:**
+
+1. Los ESP32 publican datos de telemetría cada 30 segundos al broker MQTT en tópicos específicos (`caracas/pumps/{id}/telemetry`)
+2. El backend Node.js se suscribe a estos tópicos y almacena los datos en PostgreSQL
+3. El frontend consulta la API del backend para mostrar el estado actual de las bombas
+4. Cuando el usuario presiona un botón de control, el frontend hace una petición POST a la API
+5. La API publica un mensaje de control en el tópico MQTT correspondiente (`caracas/pumps/{id}/control`)
+6. El ESP32 recibe el comando y activa/desactiva el relé de la bomba
+
+---
+
+## 2. Prerrequisitos del Servidor
+
+Antes de comenzar el despliegue, asegúrate de tener instalado el siguiente software en tu servidor Ubuntu:
+
+### Software Requerido
+
+```bash
+# Actualizar el sistema
+sudo apt update && sudo apt upgrade -y
+
+# Instalar Node.js (LTS 20.x)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Verificar instalación
+node --version  # Debe mostrar v20.x.x
+npm --version
+
+# Instalar Git
+sudo apt install -y git
+
+# Instalar Docker y Docker Compose
+sudo apt install -y docker.io docker-compose
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# Añadir tu usuario al grupo docker (para ejecutar sin sudo)
+sudo usermod -aG docker $USER
+# Cerrar sesión y volver a entrar para que tome efecto
+
+# Instalar Nginx
+sudo apt install -y nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+
+# Instalar PM2 globalmente
+sudo npm install -g pm2
+```
+
+### Puertos que debes abrir en el firewall
+
+```bash
+# Habilitar UFW si no está activo
+sudo ufw enable
+
+# Permitir SSH
+sudo ufw allow 22/tcp
+
+# Permitir HTTP y HTTPS
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+
+# Permitir MQTT
+sudo ufw allow 1883/tcp
+
+# Permitir MQTT WebSockets (opcional)
+sudo ufw allow 9001/tcp
+
+# Verificar estado
+sudo ufw status
+```
+
+---
+
+## 3. Configuración del Broker MQTT
+
+### Paso 1: Crear estructura de directorios
+
+```bash
+# Crear directorio para el proyecto
+mkdir -p ~/pump-system/{mqtt,postgres,backend,frontend}
+cd ~/pump-system/mqtt
+```
+
+### Paso 2: Crear archivo de configuración de Mosquitto
+
+Crea el archivo `mosquitto.conf`:
+
+```bash
+nano mosquitto.conf
+```
+
+Contenido del archivo:
+
+```conf
+# Configuración básica de Mosquitto
+listener 1883
+protocol mqtt
+
+# Habilitar autenticación por usuario/contraseña
+allow_anonymous false
+password_file /mosquitto/config/passwd
+
+# WebSockets (opcional, para debug desde navegador)
+listener 9001
+protocol websockets
+
+# Logging
+log_dest file /mosquitto/log/mosquitto.log
+log_dest stdout
+log_type all
+
+# Persistencia de mensajes
+persistence true
+persistence_location /mosquitto/data/
+
+# Configuraciones de seguridad adicionales
+max_connections -1
+max_queued_messages 1000
+```
+
+### Paso 3: Crear archivo de usuarios y contraseñas
+
+```bash
+# Crear archivo de contraseñas
+touch passwd
+
+# Darle permisos de lectura/escritura para que el proceso dentro de Docker pueda usarlo
+chmod 666 passwd
+
+# Añadir usuario (ejemplo: usuario "esp32", contraseña "SecurePass123")
+# Nota: Este comando se ejecutará dentro del contenedor
+```
+
+### Paso 4: Crear docker-compose.yml
+
+En el directorio `~/pump-system`, crea el archivo `docker-compose.yml`:
+
+```bash
+cd ~/pump-system
+nano docker-compose.yml
+```
+
+Contenido:
+
+```yaml
+version: '3.8'
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: mqtt-broker
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mqtt/passwd:/mosquitto/config/passwd
+      - mqtt-data:/mosquitto/data
+      - mqtt-logs:/mosquitto/log
+    networks:
+      - pump-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: pump-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pumpuser
+      POSTGRES_PASSWORD: SecureDBPassword123
+      POSTGRES_DB: pump_monitoring
+    user: "1883:1883"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - pump-network
+
+volumes:
+  mqtt-data:
+  mqtt-logs:
+  postgres-data:
+
+networks:
+  pump-network:
+    driver: bridge
+```
+
+### Paso 5: Iniciar servicios y configurar usuarios MQTT
+
+```bash
+# Iniciar los servicios
+docker-compose up -d
+sleep 3
+
+# Crear usuario y contraseña para MQTT
+docker exec -it mqtt-broker mosquitto_passwd -b /mosquitto/config/passwd esp32 SecurePass123
+
+# Puedes añadir más usuarios si lo necesitas
+docker exec -it mqtt-broker mosquitto_passwd -b /mosquitto/config/passwd backend BackendPass456
+
+# Reiniciar Mosquitto para aplicar cambios
+docker-compose restart mosquitto
+
+# Verificar que los servicios están corriendo
+docker-compose ps
+```
+
+---
+
+## 4. Configuración de la Base de Datos
+
+La base de datos PostgreSQL ya está configurada en el `docker-compose.yml` anterior.
+
+### Crear tablas necesarias
+
+Conéctate a la base de datos y crea las tablas:
+
+```bash
+# Conectarse a PostgreSQL
+docker exec -it pump-database psql -U pumpuser -d pump_monitoring
+```
+
+Ejecuta el siguiente SQL:
+
+```sql
+-- Tabla para almacenar telemetría histórica
+CREATE TABLE IF NOT EXISTS pump_telemetry (
+    id SERIAL PRIMARY KEY,
+    pump_id INTEGER NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    water_level_percent FLOAT,
+    current_amps FLOAT,
+    current_inflow_rate FLOAT,
+    street_flow_status VARCHAR(20),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Índices para mejorar las consultas
+CREATE INDEX idx_pump_id ON pump_telemetry(pump_id);
+CREATE INDEX idx_timestamp ON pump_telemetry(timestamp);
+
+-- Tabla para almacenar comandos enviados (auditoría)
+CREATE TABLE IF NOT EXISTS pump_commands (
+    id SERIAL PRIMARY KEY,
+    pump_id INTEGER NOT NULL,
+    command VARCHAR(20) NOT NULL,
+    sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    sent_by VARCHAR(100)
+);
+
+-- Salir de psql
+\q
+```
+
+### Variables de conexión
+
+La cadena de conexión para el backend será:
+
+```
+DATABASE_URL=postgresql://pumpuser:SecureDBPassword123@localhost:5432/pump_monitoring
+```
+
+---
+
+## 5. Despliegue del Backend (Node.js API)
+
+### Paso 1: Clonar el repositorio
+
+```bash
+cd ~/pump-system/backend
+git clone <URL_DE_TU_REPOSITORIO_BACKEND> .
+
+# O si estás creando desde cero, inicializa el proyecto
+npm init -y
+```
+
+### Paso 2: Instalar dependencias
+
+Si tu `package.json` incluye las dependencias necesarias:
+
+```bash
+npm install
+```
+
+Dependencias principales que debes tener:
+
+```json
+{
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "mqtt": "^5.3.0",
+    "pg": "^8.11.3",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2"
+  }
+}
+```
+
+### Paso 3: Crear archivo .env
+
+Crea un archivo `.env.example` con la siguiente estructura:
+
+```bash
+nano .env.example
+```
+
+Contenido:
+
+```env
+# Puerto del servidor
+PORT=3000
+
+# Base de datos PostgreSQL
+DATABASE_URL=postgresql://pumpuser:SecureDBPassword123@localhost:5432/pump_monitoring
+
+# Broker MQTT
+MQTT_BROKER_URL=mqtt://localhost:1883
+MQTT_USERNAME=backend
+MQTT_PASSWORD=BackendPass456
+
+# Configuración general
+NODE_ENV=production
+```
+
+Ahora copia el ejemplo y edita con tus valores reales:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+### Paso 4: Compilar el código TypeScript
+
+Asegúrate de tener un `tsconfig.json` configurado. Ejemplo:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "node"
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+Compila el backend:
+
+```bash
+npx tsc backend/server.ts \
+  --outDir dist-backend \
+  --target ES2020 \
+  --module CommonJS \
+  --moduleResolution node \
+  --esModuleInterop \
+  --skipLibCheck
+```
+
+### Paso 5: Iniciar con PM2
+
+```bash
+# Iniciar la aplicación
+pm2 start dist/backend-express-ref/server.js --name "pump-api"
+
+# Guardar la configuración de PM2 para que se inicie al reiniciar el servidor
+pm2 save
+pm2 startup
+
+# El comando anterior te dará un comando adicional que debes ejecutar, algo como:
+# sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u tu_usuario --hp /home/tu_usuario
+
+# Ver logs en tiempo real
+pm2 logs pump-api
+
+# Ver estado
+pm2 status
+```
+
+### Comandos útiles de PM2
+
+```bash
+# Reiniciar la aplicación
+pm2 restart pump-api
+
+# Detener la aplicación
+pm2 stop pump-api
+
+# Ver logs
+pm2 logs pump-api
+
+# Ver monitoreo en tiempo real
+pm2 monit
+
+# Eliminar del registro de PM2
+pm2 delete pump-api
+```
+
+---
+
+## 6. Despliegue del Frontend (React App)
+
+### Paso 1: Clonar el repositorio
+
+```bash
+cd ~/pump-system/frontend
+git clone <URL_DE_TU_REPOSITORIO_FRONTEND> .
+```
+
+### Paso 2: Crear archivo .env
+
+Crea `.env.example`:
+
+```bash
+nano .env.example
+```
+
+Contenido:
+
+```env
+# URL de la API del backend
+VITE_API_BASE_URL=http://tu-servidor.com/api
+
+# Otras variables si las necesitas
+# VITE_MQTT_WS_URL=ws://tu-servidor.com:9001
+```
+
+Copia y edita:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Reemplaza `tu-servidor.com` con tu dominio o IP pública.
+
+### Paso 3: Instalar dependencias y compilar
+
+```bash
+npm install
+npm run build
+```
+
+Esto generará los archivos estáticos optimizados en la carpeta `dist/`.
+
+### Paso 4: Configurar Nginx
+
+Crea un archivo de configuración para Nginx:
+
+```bash
+sudo nano /etc/nginx/sites-available/pump-system
+```
+
+Contenido del archivo:
+
+```nginx
+server {
+    listen 80;
+    server_name tu-servidor.com www.tu-servidor.com;  # Reemplaza con tu dominio
+
+    # Directorio donde están los archivos del frontend compilado
+    root /home/tu_usuario/pump-system/frontend/dist;
+    index index.html;
+
+    # Configuración para aplicaciones SPA (Single Page Application)
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy reverso para las peticiones a la API del backend
+    location /api/ {
+        proxy_pass http://localhost:3000/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    # Configuración de caché para assets estáticos
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Desactivar logs de favicon
+    location = /favicon.ico {
+        log_not_found off;
+        access_log off;
+    }
+
+    # Configuración de seguridad básica
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+}
+```
+
+### Paso 5: Activar el sitio y reiniciar Nginx
+
+```bash
+# Crear enlace simbólico para activar el sitio
+sudo ln -s /etc/nginx/sites-available/pump-system /etc/nginx/sites-enabled/
+
+# Eliminar configuración por defecto (opcional)
+sudo rm /etc/nginx/sites-enabled/default
+
+# Verificar que la configuración es correcta
+sudo nginx -t
+
+# Reiniciar Nginx
+sudo systemctl restart nginx
+```
+
+### Paso 6: Configurar SSL con Let's Encrypt (Recomendado)
+
+Para producción, es altamente recomendable usar HTTPS:
+
+```bash
+# Instalar Certbot
+sudo apt install -y certbot python3-certbot-nginx
+
+# Obtener certificado SSL (reemplaza con tu dominio)
+sudo certbot --nginx -d tu-servidor.com -d www.tu-servidor.com
+
+# Seguir las instrucciones en pantalla
+# Certbot configurará automáticamente Nginx para usar HTTPS
+
+# Configurar renovación automática
+sudo certbot renew --dry-run
+```
+
+---
+
+## 7. Configuración del Firmware del ESP32
+
+### Constantes a modificar en `main.cpp`
+
+Abre el archivo `main.cpp` del proyecto Arduino/PlatformIO del ESP32 y modifica las siguientes líneas:
+
+#### 1. Configuración WiFi (líneas 22-23)
+
+```cpp
+const char* ssid = "TU_RED_WIFI";           // Nombre de tu red WiFi
+const char* password = "TU_PASSWORD_WIFI";   // Contraseña de tu red WiFi
+```
+
+**Reemplaza con:**
+
+```cpp
+const char* ssid = "NombreDeTuWiFi";        // Ejemplo: "MiCasa_5G"
+const char* password = "ContraseñaSegura";   // Ejemplo: "MiPass12345"
+```
+
+#### 2. Configuración del Broker MQTT (línea 24)
+
+```cpp
+const char* mqtt_server = "192.168.1.10";  // IP de tu Broker
+```
+
+**Reemplaza con la IP pública o dominio de tu servidor:**
+
+```cpp
+const char* mqtt_server = "tu-servidor.com";  // Ejemplo: "pump.midominio.com"
+// O usa la IP pública: "203.0.113.45"
+```
+
+#### 3. Habilitar autenticación MQTT
+
+Busca la función `reconnect()` en el archivo (alrededor de las líneas 250-300) y modifica la conexión para incluir usuario y contraseña:
+
+**Código original:**
+
+```cpp
+bool reconnect() {
+  while (!client.connected()) {
+    Serial.print("Intentando conexión MQTT...");
+    if (client.connect(clientID)) {
+      Serial.println("conectado");
+      // Suscribirse al topic de control
+      client.subscribe(CONTROL_TOPIC_SUBSCRIPTION);
+      return true;
+    } else {
+      Serial.print("falló, rc=");
+      Serial.print(client.state());
+      Serial.println(" reintento en 5 segundos");
+      delay(5000);
+    }
+  }
+  return false;
+}
+```
+
+**Código modificado (con autenticación):**
+
+```cpp
+bool reconnect() {
+  while (!client.connected()) {
+    Serial.print("Intentando conexión MQTT...");
+    
+    // Conectar con usuario y contraseña
+    if (client.connect(clientID, "esp32", "SecurePass123")) {  // Usuario y contraseña MQTT
+      Serial.println("conectado");
+      
+      // Suscribirse al topic de control
+      client.subscribe(CONTROL_TOPIC_SUBSCRIPTION);
+      Serial.print("Suscrito a: ");
+      Serial.println(CONTROL_TOPIC_SUBSCRIPTION);
+      
+      return true;
+    } else {
+      Serial.print("falló, rc=");
+      Serial.print(client.state());
+      Serial.println(" reintento en 5 segundos");
+      delay(5000);
+    }
+  }
+  return false;
+}
+```
+
+**Nota:** Asegúrate de que el usuario (`esp32`) y la contraseña (`SecurePass123`) coincidan con los que configuraste en Mosquitto.
+
+#### 4. Modos de operación (líneas 15-16)
+
+Para pruebas sin sensores físicos conectados:
+
+```cpp
+#define PUMP_MODE 1              // 0 = offline, 1 = online
+#define SENSOR_SIMULATION true   // true = datos simulados, false = sensores reales
+```
+
+Para producción con sensores físicos:
+
+```cpp
+#define PUMP_MODE 1              // Modo online
+#define SENSOR_SIMULATION false  // Usar sensores reales
+```
+
+### Compilar y cargar el firmware
+
+```bash
+# Si usas PlatformIO CLI
+pio run --target upload --upload-port /dev/ttyUSB0
+
+# O desde el IDE de Arduino/PlatformIO, simplemente presiona el botón de "Upload"
+```
+
+### Verificar funcionamiento
+
+Abre el monitor serial (115200 baudios) para verificar:
+
+```
+Conectando a WiFi...
+WiFi conectado
+IP: 192.168.1.XXX
+Intentando conexión MQTT...conectado
+Suscrito a: caracas/pumps/+/control
+```
+
+---
+
+## 8. Verificación del Sistema Completo
+
+### Checklist de verificación
+
+- [ ] **Servicios Docker corriendo**: `docker-compose ps` muestra mosquitto y postgres como "Up"
+- [ ] **Backend corriendo**: `pm2 status` muestra pump-api como "online"
+- [ ] **Nginx activo**: `sudo systemctl status nginx` muestra "active (running)"
+- [ ] **Frontend accesible**: Abrir `http://tu-servidor.com` en un navegador
+- [ ] **ESP32 conectado**: Monitor serial muestra "MQTT...conectado"
+
+### Pruebas de comunicación
+
+#### 1. Verificar publicación de telemetría
+
+Suscribirse al tópico MQTT desde el servidor para ver si llegan datos:
+
+```bash
+# Instalar cliente MQTT
+sudo apt install -y mosquitto-clients
+
+# Suscribirse a todos los mensajes de telemetría
+mosquitto_sub -h localhost -p 1883 -u backend -P BackendPass456 -t "caracas/pumps/+/telemetry" -v
+```
+
+Deberías ver mensajes como:
+
+```json
+caracas/pumps/1/telemetry {"pump_id":1,"timestamp":"2025-01-18T10:30:00Z","water_level_percent":75.5,"current_amps":2.3,"current_inflow_rate":150.0,"street_flow_status":"FLOWING"}
+```
+
+#### 2. Enviar comando de prueba
+
+```bash
+# Enviar comando START a la bomba 1
+mosquitto_pub -h localhost -p 1883 -u backend -P BackendPass456 -t "caracas/pumps/1/control" -m '{"command":"START"}'
+
+# Deberías ver en el monitor serial del ESP32:
+# Comando recibido en topic: caracas/pumps/1/control
+# Comando: START para bomba 1
+# Bomba 1 ENCENDIDA
+```
+
+#### 3. Probar API desde el frontend
+
+- Abre el dashboard en tu navegador
+- Verifica que se muestran los datos de las bombas
+- Presiona el botón "ENCENDER" o "APAGAR"
+- Verifica en el monitor serial del ESP32 que se recibe el comando
+
+### Logs útiles para debugging
+
+```bash
+# Ver logs del backend
+pm2 logs pump-api
+
+# Ver logs de Mosquitto
+docker logs mqtt-broker
+
+# Ver logs de PostgreSQL
+docker logs pump-database
+
+# Ver logs de Nginx
+sudo tail -f /var/log/nginx/access.log
+sudo tail -f /var/log/nginx/error.log
+
+# Ver logs del sistema
+sudo journalctl -u nginx -f
+```
+
+---
+
+## 9. Mantenimiento y Actualización
+
+### Actualizar el Backend
+
+```bash
+cd ~/pump-system/backend
+git pull origin main
+npm install
+npm run build
+pm2 restart pump-api
+```
+
+### Actualizar el Frontend
+
+```bash
+cd ~/pump-system/frontend
+git pull origin main
+npm install
+npm run build
+# Los archivos en dist/ se actualizan automáticamente
+```
+
+### Backup de la Base de Datos
+
+```bash
+# Crear backup
+docker exec pump-database pg_dump -U pumpuser pump_monitoring > backup_$(date +%Y%m%d).sql
+
+# Restaurar backup
+cat backup_20250118.sql | docker exec -i pump-database psql -U pumpuser -d pump_monitoring
+```
+
+### Reiniciar todos los servicios
+
+```bash
+# Reiniciar Docker
+docker-compose restart
+
+# Reiniciar Backend
+pm2 restart pump-api
+
+# Reiniciar Nginx
+sudo systemctl restart nginx
+```
+
+---
+
+## 10. Solución de Problemas Comunes
+
+### El ESP32 no se conecta al WiFi
+
+- Verifica que el SSID y password sean correctos
+- Asegúrate de que la red WiFi esté en 2.4GHz (ESP32 no soporta 5GHz)
+- Verifica que el router no tenga filtrado MAC habilitado
+
+### El ESP32 no se conecta al broker MQTT
+
+- Verifica que el puerto 1883 esté abierto en el firewall
+- Prueba conectarte desde otro cliente: `mosquitto_sub -h tu-servidor.com -p 1883 -u esp32 -P SecurePass123 -t "test"`
+- Revisa los logs de Mosquitto: `docker logs mqtt-broker`
+
+### El frontend no muestra datos
+
+- Verifica que el backend esté corriendo: `pm2 status`
+- Verifica que la variable `VITE_API_BASE_URL` en `.env` del frontend apunte correctamente al backend
+- Abre las DevTools del navegador y revisa la consola y la pestaña Network
+
+### Error 502 Bad Gateway en Nginx
+
+- Verifica que el backend esté corriendo en el puerto correcto: `pm2 status`
+- Revisa la configuración del proxy en Nginx: `sudo nginx -t`
+- Verifica los logs: `sudo tail -f /var/log/nginx/error.log`
+
+---
+
+## Recursos Adicionales
+
+- [Documentación de MQTT](https://mqtt.org/)
+- [Documentación de Mosquitto](https://mosquitto.org/documentation/)
+- [Guía de PM2](https://pm2.keymetrics.io/docs/usage/quick-start/)
+- [Nginx Documentation](https://nginx.org/en/docs/)
+- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
+- [ESP32 Arduino Core](https://github.com/espressif/arduino-esp32)
+
+---
+
+**¡Sistema desplegado con éxito!** 🚀
+
+Si tienes problemas, revisa los logs de cada componente y verifica que todas las credenciales y URLs estén correctamente configuradas.

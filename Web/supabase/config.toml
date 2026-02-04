@@ -1,0 +1,10 @@
+project_id = "xttpwemyddczplcjubwq"
+
+[functions.telemetry]
+verify_jwt = false
+
+[functions.pump-status]
+verify_jwt = false
+
+[functions.pump-control]
+verify_jwt = false

@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "module": "CommonJS",
+    "target": "ES2020",
+    "moduleResolution": "node",
+    "outDir": "./dist-backend",
+    "rootDir": ".",
+    "strict": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": false,
+    "noEmitOnError": false,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": [
+    // Solo incluimos explícitamente el servidor y librerías puras
+    "backend-express-ref/**/*.ts",
+    "src/lib/**/*.ts",
+    "src/types/**/*.ts",
+    "src/integrations/**/*.ts" 
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-backend",
+    "dist-server",
+    // EXCLUIMOS EL FRONTEND (React)
+    "src/components",
+    "src/hooks",
+    "src/App.tsx",
+    "src/main.tsx",
+    // EXCLUIMOS DENO (Supabase Functions)
+    "supabase",
+    "**/*.tsx" // Regla de oro: Si es React, fuera.
+  ]
+}
