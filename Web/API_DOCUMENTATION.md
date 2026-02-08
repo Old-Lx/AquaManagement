@@ -227,7 +227,3 @@ curl -X POST https://xttpwemyddczplcjubwq.supabase.co/functions/v1/pump-control/
   -H "Content-Type: application/json" \
   -d '{"command":"START"}'
 ```
-
-## Logs
-
-Los logs de las edge functions están disponibles en el panel de Lovable Cloud para debugging y monitoreo.

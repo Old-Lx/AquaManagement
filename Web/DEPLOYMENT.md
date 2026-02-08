@@ -500,7 +500,10 @@ Contenido:
 
 ```env
 # URL de la API del backend
-VITE_API_BASE_URL=http://tu-servidor.com/api
+# VITE_API_BASE_URL=http://tu-servidor.com/api
+
+# Si usas IP:
+# VITE_API_BASE_URL=http://localhost/api
 
 # Otras variables si las necesitas
 # VITE_MQTT_WS_URL=ws://tu-servidor.com:9001
@@ -520,6 +523,10 @@ Reemplaza `tu-servidor.com` con tu dominio o IP pública.
 ```bash
 npm install
 npm run build
+sudo mkdir -p /var/www/pump-system/html
+sudo cp -r dist/* /var/www/pump-system/html/
+sudo chown -R www-data:www-data /var/www/pump-system/html
+sudo chmod -R 755 /var/www/pump-system/html
 ```
 
 Esto generará los archivos estáticos optimizados en la carpeta `dist/`.
@@ -537,46 +544,27 @@ Contenido del archivo:
 ```nginx
 server {
     listen 80;
-    server_name tu-servidor.com www.tu-servidor.com;  # Reemplaza con tu dominio
+    # Puedes poner tu-servidor.com www.tu-servidor.com o tu IP Pública si no tienes dominio
+    server_name localhost;
 
     # Directorio donde están los archivos del frontend compilado
-    root /home/tu_usuario/pump-system/frontend/dist;
+    root /var/www/pump-system/; # este sólo es un ejemplo
     index index.html;
 
-    # Configuración para aplicaciones SPA (Single Page Application)
+    # Configuración para SPA (React Router)
     location / {
         try_files $uri $uri/ /index.html;
     }
 
-    # Proxy reverso para las peticiones a la API del backend
+    # Proxy reverso para la API
     location /api/ {
-        proxy_pass http://localhost:3000/api/;
+        proxy_pass http://localhost:3000/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
     }
-
-    # Configuración de caché para assets estáticos
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    # Desactivar logs de favicon
-    location = /favicon.ico {
-        log_not_found off;
-        access_log off;
-    }
-
-    # Configuración de seguridad básica
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
 }
 ```
 
@@ -622,7 +610,7 @@ sudo certbot renew --dry-run
 
 Abre el archivo `main.cpp` del proyecto Arduino/PlatformIO del ESP32 y modifica las siguientes líneas:
 
-#### 1. Configuración WiFi (líneas 22-23)
+#### 1. Configuración WiFi
 
 ```cpp
 const char* ssid = "TU_RED_WIFI";           // Nombre de tu red WiFi
@@ -636,7 +624,7 @@ const char* ssid = "NombreDeTuWiFi";        // Ejemplo: "MiCasa_5G"
 const char* password = "ContraseñaSegura";   // Ejemplo: "MiPass12345"
 ```
 
-#### 2. Configuración del Broker MQTT (línea 24)
+#### 2. Configuración del Broker MQTT
 
 ```cpp
 const char* mqtt_server = "192.168.1.10";  // IP de tu Broker
@@ -651,7 +639,7 @@ const char* mqtt_server = "tu-servidor.com";  // Ejemplo: "pump.midominio.com"
 
 #### 3. Habilitar autenticación MQTT
 
-Busca la función `reconnect()` en el archivo (alrededor de las líneas 250-300) y modifica la conexión para incluir usuario y contraseña:
+Busca la función `reconnect()` en el archivo y modifica la conexión para incluir usuario y contraseña:
 
 **Código original:**
 
@@ -705,7 +693,7 @@ bool reconnect() {
 
 **Nota:** Asegúrate de que el usuario (`esp32`) y la contraseña (`SecurePass123`) coincidan con los que configuraste en Mosquitto.
 
-#### 4. Modos de operación (líneas 15-16)
+#### 4. Modos de operación
 
 Para pruebas sin sensores físicos conectados:
 
