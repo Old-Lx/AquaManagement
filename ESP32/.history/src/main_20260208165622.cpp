@@ -1,7 +1,6 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <cstdlib>
 
 // -------------------------------------------------------------------------
 // 0. MODOS DE OPERACIÓN
@@ -20,9 +19,9 @@
 // 1. CONFIGURACIÓN DE RED Y BROKER
 // -------------------------------------------------------------------------
 
-const char* ssid = std::getenv("SSID");
-const char* password = std::getenv("PASSWD");
-const char* mqtt_server = std::getenv("MY_IP"); // IP de tu Broker
+const char* ssid = "";
+const char* password = "Aeronave07";
+const char* mqtt_server = "192.168.0.109"; // IP de tu Broker
 const int mqtt_port = 1883;
 const int baudrate = 115200;
 
