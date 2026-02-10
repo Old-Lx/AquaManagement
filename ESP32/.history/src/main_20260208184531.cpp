@@ -15,16 +15,14 @@
 */
 #define PUMP_MODE 1  // El modo 0 es prueba offline, el 1 es prueba online o produccion
 #define SENSOR_SIMULATION true // Indica si la data va a ser simulada o no
-#define STRIZE_REAL(x) #x
-#define STRIZE(x) STRIZE_REAL(x)
 
 // -------------------------------------------------------------------------
 // 1. CONFIGURACIÓN DE RED Y BROKER
 // -------------------------------------------------------------------------
 
-const char* ssid = SSID_VAR;
-const char* password = PASSWD_VAR;
-const char* mqtt_server = IP_VAR; // IP de tu Broker
+const char* ssid = std::getenv("SSID");
+const char* password = std::getenv("PASSWD");
+const char* mqtt_server = std::getenv("MY_IP"); // IP de tu Broker
 const int mqtt_port = 1883;
 const int baudrate = 115200;
 
@@ -127,7 +125,7 @@ void reconnect() {
   #else
     while (!client.connected() && WiFi.status() == WL_CONNECTED) {
       Serial.print("Intentando conexión MQTT...");
-      if (client.connect(clientID, "esp32", "SecurePass123")) {
+      if (client.connect(clientID, "backend", "BackendPass456")) {
         Serial.println("conectado");
         
         // SUSCRIPCIÓN GENÉRICA PARA EL CONTROL DE CUALQUIER BOMBA
@@ -444,7 +442,7 @@ void publishTelemetry() {
 
 void setup() {
   Serial.begin(baudrate);
-  
+  Serial.println(ssid);
   setup_wifi();
   
   // Si tenemos Wi-Fi, configuramos el MQTT
@@ -496,6 +494,9 @@ void loop() {
     }
     client.loop();
   #endif
+
+  Serial.println(ssid);
+  Serial.println("Debug");
 
   long now = millis();
   // Publicar si ha pasado el intervalo de tiempo (aplica a todos los modos)

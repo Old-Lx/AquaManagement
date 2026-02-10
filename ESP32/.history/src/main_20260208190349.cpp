@@ -127,7 +127,7 @@ void reconnect() {
   #else
     while (!client.connected() && WiFi.status() == WL_CONNECTED) {
       Serial.print("Intentando conexión MQTT...");
-      if (client.connect(clientID, "esp32", "SecurePass123")) {
+      if (client.connect(clientID, "backend", "BackendPass456")) {
         Serial.println("conectado");
         
         // SUSCRIPCIÓN GENÉRICA PARA EL CONTROL DE CUALQUIER BOMBA
@@ -444,7 +444,7 @@ void publishTelemetry() {
 
 void setup() {
   Serial.begin(baudrate);
-  
+  Serial.println(ssid);
   setup_wifi();
   
   // Si tenemos Wi-Fi, configuramos el MQTT
@@ -496,6 +496,9 @@ void loop() {
     }
     client.loop();
   #endif
+
+  Serial.println(ssid);
+  Serial.println("Debug");
 
   long now = millis();
   // Publicar si ha pasado el intervalo de tiempo (aplica a todos los modos)

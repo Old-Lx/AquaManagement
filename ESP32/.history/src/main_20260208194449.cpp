@@ -127,7 +127,7 @@ void reconnect() {
   #else
     while (!client.connected() && WiFi.status() == WL_CONNECTED) {
       Serial.print("Intentando conexión MQTT...");
-      if (client.connect(clientID, "esp32", "SecurePass123")) {
+      if (client.connect(clientID, "backend", "BackendPass456")) {
         Serial.println("conectado");
         
         // SUSCRIPCIÓN GENÉRICA PARA EL CONTROL DE CUALQUIER BOMBA
